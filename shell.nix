@@ -7,6 +7,8 @@
       ffmpeg
       python313Packages.flask
       # nix repl, :l <nixpkgs>, søg
+      python313Packages.ffmpeg-python
+      python313Packages.srt
     ];
 }
 
