@@ -1,5 +1,6 @@
-from flask import Flask, request, jsonify, render_template, abort
+from flask import Flask, request, jsonify, render_template, abort, send_file
 from tempfile import NamedTemporaryFile
+from whisper.utils import get_writer
 import whisper
 import torch
 import os
@@ -7,9 +8,25 @@ import ffmpeg
 import srt
 import datetime
 
+
 # Select device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model = whisper.load_model("base", device=DEVICE)
+
+# Video to audio
+def is_audio(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in ALLOWED_AUDIO
+
+def is_video(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in ALLOWED_VIDEO
+
+def video_to_audio(video_path, audio_path):
+    ffmpeg.input(video_path).output(audio_path).run()
+
+ALLOWED_AUDIO = {'.mp3', '.wav', '.flac', '.m4a', '.ogg', '.webm'}
+ALLOWED_VIDEO = {'.mp4', '.mov', '.avi', '.webm', '.mkv'}
 
 app = Flask(__name__)
 
