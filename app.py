@@ -11,7 +11,7 @@ import datetime
 
 # Select device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model = whisper.load_model("base", device=DEVICE)
+model = whisper.load_model("large", device=DEVICE)
 
 # Video to audio
 def is_audio(filename):

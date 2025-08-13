@@ -1,33 +1,22 @@
 #!/bin/bash
 
-# Ensure the script fails fast
-set -e
+RECORDINGS_DIR="$1"
 
-# Path to the video file passed as argument
-VIDEO_PATH="$1"
-
-# Check if video path was provided
-if [[ -z "$VIDEO_PATH" ]]; then
-    echo "Usage: $0 /path/to/video.mp4"
-    exit 1
+if [ -z "$RECORDINGS_DIR" ]; then
+    RECORDINGS_DIR="/recordings"
 fi
 
-# Extract the directory and filename parts
-VIDEO_DIR=$(dirname "$VIDEO_PATH")
-VIDEO_FILENAME=$(basename "$VIDEO_PATH")
-VIDEO_BASENAME="${VIDEO_FILENAME%.*}"
+echo "[Finalize] Running at $(date)" >> /tmp/finalize.log
+echo "[Finalize] RECORDINGS_DIR=$RECORDINGS_DIR" >> /tmp/finalize.log
 
-# Define the output .srt path
-SRT_PATH="${VIDEO_DIR}/${VIDEO_BASENAME}.srt"
+timestamp=$(date +%Y-%m-%d_%H-%M-%S)
 
-# Endpoint for your transcription API
-API_ENDPOINT="http://your-api/transcribe"
+# Parent directory where the session folder is located
+parent_dir=$(dirname "$RECORDINGS_DIR")
+# New name for the folder
+new_dir="${parent_dir}/${timestamp}"
 
-echo "Sending $VIDEO_FILENAME to API..."
+echo "[Finalize] Renaming \"$RECORDINGS_DIR\" to \"$new_dir\"" >> /tmp/finalize.log
+mv "$RECORDINGS_DIR" "$new_dir"
 
-# Use curl to send the video and save the resulting SRT
-curl -s -X POST "$API_ENDPOINT" \
-    -F "file=@$VIDEO_PATH" \
-    -o "$SRT_PATH"
-
-echo "Transcription saved to $SRT_PATH"
+echo "[Finalize] Done." >> /tmp/finalize.log
