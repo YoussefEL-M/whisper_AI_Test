@@ -52,6 +52,9 @@
   <!-- Upload/transcribe button -->
   <button id="uploadBtn" class="mt-4 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 rounded shadow disabled:opacity-50" disabled>Transcribe</button>
 
+  <!-- Export SRT button-->
+   <button id="uploadSrtBtn" class="mt-4 ml-2 px-6 py-2 bg-purple-600 hover:bg-purple-500 rounded shadow disabled:opacity-50" disabled>Export SRT</button>
+
   <!-- Loading spinner -->
   <div id="loading" class="hidden mt-6">
     <svg class="animate-spin h-8 w-8 text-indigo-400 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -92,6 +95,7 @@ let audioChunks = [];
 function showFile(file) {
   selectedFile = file;
   uploadBtn.disabled = false;
+  uploadSrtBtn.disabled = false; 
   dropZone.querySelector('p').textContent = `Selected: ${selectedFile.name}`;
   const objectURL = URL.createObjectURL(selectedFile);
   audioPreview.src = objectURL;
@@ -182,6 +186,34 @@ uploadBtn.addEventListener('click', async () => {
     loading.classList.add('hidden');
   } finally {
     uploadBtn.disabled = false;
+  }
+});
+
+const uploadSrtBtn = document.getElementById('uploadSrtBtn');
+
+uploadSrtBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+  formData.append("language", languageSelect.value);
+
+  uploadSrtBtn.disabled = true;
+  try {
+    const res = await fetch('/transcribe/srt', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'subtitles.srt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (err) {
+    alert("Error: " + err.message);
+  } finally {
+    uploadSrtBtn.disabled = false;
   }
 });
 

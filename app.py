@@ -5,6 +5,8 @@ import whisper
 import torch
 import os
 import ffmpeg
+import srt
+import datetime
 
 
 # Select device
@@ -51,40 +53,56 @@ def transcribe():
         "segments": result.get("segments", [])
     })
 
-
 @app.route("/transcribe/srt", methods=["POST"])
 def transcribe_srt():
     if "file" not in request.files:
-        abort(400, "No file uploaded")
-    upload = request.files["file"]
-    ext = os.path.splitext(upload.filename)[1].lower()
+        abort(400, description="No file Uploaded")
+    video_file = request.files["file"]
+    language = request.form.get("language") or None
 
-    with NamedTemporaryFile(delete=False, suffix=ext) as tmp_in:
-        upload.save(tmp_in.name)
-        audio_path = tmp_in.name
+    #Temp files
+    with NamedTemporaryFile(delete=False, suffix=os.path.splitext(video_file.filename)[1]) as tmp_video:
+        video_file.save(tmp_video.name)
+        tmp_video_path = tmp_video.name
+    with NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+        tmp_audio_path = tmp_audio.name
 
-    # convert video to WAV if needed
-    if is_video(upload.filename):
-        with NamedTemporaryFile(delete=False, suffix='.wav') as tmp_audio:
-            video_to_audio(audio_path, tmp_audio.name)
-            audio_path = tmp_audio.name
+    try:
+        # Extract audio from video
+        ffmpeg.input(tmp_video_path).output(tmp_audio_path, format="wav", ar="16k").run(quiet=True, overwrite_output=True)
 
-    # Run Whisper transcription
-    result = model.transcribe(audio_path, task="transcribe")
+        # Transcribe with whisper
+        transcribe_kwargs = {}
+        if language:
+            transcribe_kwargs["language"] = language
 
-    # Write SRT to same dir as audio
-    output_dir = os.path.dirname(audio_path)
-    writer = get_writer("srt", output_dir)
-    writer(result, audio_path)
+        result = model.transcribe(tmp_audio_path, **transcribe_kwargs)
 
-    # Figure out actual generated path
-    srt_path = os.path.splitext(audio_path)[0] + ".srt"
-    if not os.path.exists(srt_path):
-        abort(500, "SRT file was not created")
+        # Build SRT subtitles
+        subs = []
+        for i, seg in enumerate(result.get("segments", []), start=1):
+            start = datetime.timedelta(seconds=seg["start"])
+            end= datetime.timedelta(seconds=seg["end"])
+            subs.append(srt.Subtitle(index=i, start=start, end=end, content=seg["text"].strip()))
 
-    return send_file(srt_path, as_attachment=True,
-                     download_name="transcript.srt",
-                     mimetype="text/plain")
+        srt_data = srt.compose(subs)
+
+        # Return downloadable file
+        return (
+            srt_data,
+            200,
+            {
+                "Content-Type": "application/x-subrip",
+                "Content-Disposition": 'attachment; filename="subtitles.srt"'
+            }
+        )        
+
+    finally:
+        #Clean up temp files
+        if os.path.exists(tmp_video_path):
+            os.remove(tmp_video_path)
+        if os.path.exists(tmp_audio_path):
+            os.remove(tmp_audio_path)
 
 #production:
 #if __name__ == "__main__":
