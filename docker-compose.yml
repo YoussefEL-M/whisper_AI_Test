@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  whisper:
+    build: .
+    container_name: local-whisper
+    ports:
+      - "5000:5000"  # Flask app
+      - "5001:5001"  # WebSocket server
+    volumes:
+      - ./models:/app/models
+      - ./installed_models:/app/installed_models
+      - ./TinyLlama-1.1B-Chat-v1.0:/app/TinyLlama-1.1B-Chat-v1.0
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/local-whisper/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

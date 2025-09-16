@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ['PYTORCH_NVML_BASED_CUDA_CHECK'] = '1'
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-# os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'  # Commented out due to compatibility issue
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model_name_or_path = "/opt/praktik/whisper/TinyLlama-1.1B-Chat-v1.0"
@@ -573,148 +573,21 @@ def stt():
     os.remove("temp.wav")
     return jsonify({"transcript": result["text"]})
 
-# ==== SKYNET-COMPATIBLE STREAMING WHISPER SERVER ====
+# ==== NEW SKYNET-COMPATIBLE WEBSOCKET SERVER ====
 
-# Enhanced connection management for WebSocket with Skynet compatibility
+# Connection management for WebSocket
 class WhisperConnectionManager:
     def __init__(self):
         self.connections = {}
-        self.flush_audio_task = None
         
     async def connect(self, websocket, room_name):
-        self.connections[room_name] = {
-            'websocket': websocket,
-            'participants': {},
-            'previous_transcription_tokens': [],
-            'previous_transcription_store': [],
-            'meeting_language': None,
-            'tokenizer': None
-        }
+        self.connections[room_name] = websocket
         print(f"Connected to room: {room_name}")
-        
-        # Start flush audio worker if not already running
-        if self.flush_audio_task is None:
-            import asyncio
-            loop = asyncio.get_running_loop()
-            self.flush_audio_task = loop.create_task(self.flush_working_audio_worker())
         
     def disconnect(self, room_name):
         if room_name in self.connections:
             del self.connections[room_name]
         print(f"Disconnected from room: {room_name}")
-    
-    async def flush_working_audio_worker(self):
-        """Force transcription for participants with accumulated audio"""
-        while True:
-            try:
-                for room_name, room_data in self.connections.items():
-                    for participant_id, participant_data in room_data['participants'].items():
-                        if (participant_data.get('working_audio') and 
-                            len(participant_data['working_audio']) > 0 and 
-                            not participant_data.get('is_transcribing', False)):
-                            
-                            # Check if enough time has passed since last chunk
-                            current_time = int(datetime.datetime.now().timestamp() * 1000)
-                            last_chunk_time = participant_data.get('last_received_chunk', 0)
-                            if current_time - last_chunk_time > 2000:  # 2 seconds
-                                print(f"Forcing transcription for {participant_id} in room {room_name}")
-                                await self.force_transcription(room_name, participant_id)
-                
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"Error in flush worker: {e}")
-                await asyncio.sleep(1)
-    
-    async def force_transcription(self, room_name, participant_id):
-        """Force transcription for a participant"""
-        if room_name not in self.connections:
-            return
-        
-        room_data = self.connections[room_name]
-        if participant_id not in room_data['participants']:
-            return
-        
-        participant_data = room_data['participants'][participant_id]
-        working_audio = participant_data.get('working_audio', b'')
-        
-        if len(working_audio) > 0:
-            try:
-                # Transcribe the accumulated audio
-                result = await self.transcribe_audio(working_audio, participant_data.get('language', 'en'))
-                
-                if result and result.get('text', '').strip():
-                    # Send transcription result
-                    response = {
-                        "type": "final",
-                        "text": result['text'].strip(),
-                        "participant": participant_id,
-                        "language": result.get('language', participant_data.get('language', 'en')),
-                        "timestamp": int(datetime.datetime.now().timestamp() * 1000)
-                    }
-                    
-                    # Send response based on room type
-                    if room_name.startswith('socketio-'):
-                        self.send_to_socketio_room(room_name, response)
-                    else:
-                        await self.send_to_room(room_name, response)
-                    
-                    # Reset participant audio buffer
-                    participant_data['working_audio'] = b''
-                    participant_data['working_audio_starts_at'] = 0
-                    
-            except Exception as e:
-                print(f"Error in force transcription: {e}")
-    
-    async def transcribe_audio(self, audio_bytes, language='en'):
-        """Transcribe audio bytes using Whisper"""
-        try:
-            # Convert bytes to numpy array
-            audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-            audio_float = audio_data.astype(np.float32) / 32768.0
-            
-            # Load whisper model
-            model = load_whisper_model()
-            
-            # Transcribe
-            transcribe_kwargs = {}
-            if language and language != 'auto':
-                transcribe_kwargs['language'] = language
-            
-            result = model.transcribe(
-                audio_float,
-                **transcribe_kwargs,
-                fp16=False,
-                beam_size=1,
-                temperature=0.0
-            )
-            
-            return {
-                'text': result.get('text', ''),
-                'language': result.get('language', language)
-            }
-            
-        except Exception as e:
-            print(f"Transcription error: {e}")
-            return None
-    
-    async def send_to_room(self, room_name, message):
-        """Send message to all participants in a room"""
-        if room_name in self.connections:
-            try:
-                websocket = self.connections[room_name]['websocket']
-                await websocket.send(json.dumps(message))
-            except Exception as e:
-                print(f"Error sending message to room {room_name}: {e}")
-    
-    def send_to_socketio_room(self, room_name, message):
-        """Send message to SocketIO room"""
-        try:
-            # Extract session ID from room name (format: socketio-{session_id})
-            if room_name.startswith('socketio-'):
-                session_id = room_name.replace('socketio-', '')
-                socketio.emit('transcription', message, room=session_id, namespace='/local-whisper/ws')
-        except Exception as e:
-            print(f"Error sending message to SocketIO room {room_name}: {e}")
 
 connection_manager = WhisperConnectionManager()
 
@@ -776,8 +649,46 @@ async def handle_websocket_client(websocket, path):
                     pcm_data = message[60:]
                     
                     if len(pcm_data) > 0:
-                        # Process audio chunk with enhanced connection manager
-                        await process_audio_chunk(room_name, participant_id, language, pcm_data)
+                        # Convert PCM16 bytes to numpy array for Whisper
+                        audio_data = np.frombuffer(pcm_data, dtype=np.int16)
+                        
+                        # Normalize to [-1, 1] range for Whisper
+                        audio_float = audio_data.astype(np.float32) / 32768.0
+                        
+                        # Only transcribe if we have enough audio (at least 0.5 seconds)
+                        if len(audio_float) >= 8000:  # 0.5 seconds at 16kHz
+                            # Load model if needed
+                            model = load_whisper_model()
+                            
+                            # Set language if specified and not 'auto'
+                            transcribe_kwargs = {}
+                            if language and language != 'auto':
+                                transcribe_kwargs['language'] = language
+                            
+                            # Transcribe with Whisper
+                            result = model.transcribe(
+                                audio_float,
+                                **transcribe_kwargs,
+                                fp16=False,
+                                beam_size=1,  # Fast transcription
+                                temperature=0.0  # Deterministic output
+                            )
+                            
+                            text = result["text"].strip()
+                            
+                            if text:
+                                print(f"Transcribed from {participant_id} ({language}): {text}")
+                                
+                                # Send transcription back in expected format
+                                response = {
+                                    "type": "final",  # or "interim" for partial results
+                                    "text": text,
+                                    "participant": participant_id,
+                                    "language": result.get("language", language),
+                                    "timestamp": int(datetime.datetime.now().timestamp() * 1000)
+                                }
+                                
+                                await websocket.send(json.dumps(response))
                         
             except Exception as e:
                 print(f"Error processing audio: {e}")
@@ -793,82 +704,6 @@ async def handle_websocket_client(websocket, path):
     finally:
         connection_manager.disconnect(room_name)
 
-async def process_audio_chunk(room_name, participant_id, language, pcm_data):
-    """Process audio chunk with Skynet-compatible logic"""
-    try:
-        if room_name not in connection_manager.connections:
-            return
-        
-        room_data = connection_manager.connections[room_name]
-        
-        # Initialize participant if not exists
-        if participant_id not in room_data['participants']:
-            room_data['participants'][participant_id] = {
-                'working_audio': b'',
-                'working_audio_starts_at': 0,
-                'language': language,
-                'last_received_chunk': int(datetime.datetime.now().timestamp() * 1000),
-                'is_transcribing': False,
-                'chunk_count': 0
-            }
-        
-        participant_data = room_data['participants'][participant_id]
-        
-        # Update participant data
-        participant_data['last_received_chunk'] = int(datetime.datetime.now().timestamp() * 1000)
-        participant_data['chunk_count'] += 1
-        
-        # Add audio to working buffer
-        if not participant_data['working_audio']:
-            participant_data['working_audio_starts_at'] = participant_data['last_received_chunk']
-        
-        participant_data['working_audio'] += pcm_data
-        
-        # Check if we should transcribe (accumulated enough audio)
-        audio_length_samples = len(participant_data['working_audio']) // 2  # 2 bytes per sample
-        audio_length_seconds = audio_length_samples / 16000  # 16kHz sample rate
-        
-        # Transcribe if we have at least 1 second of audio and not already transcribing
-        if audio_length_seconds >= 1.0 and not participant_data['is_transcribing']:
-            participant_data['is_transcribing'] = True
-            
-            try:
-                # Transcribe the accumulated audio
-                result = await connection_manager.transcribe_audio(
-                    participant_data['working_audio'], 
-                    participant_data['language']
-                )
-                
-                if result and result.get('text', '').strip():
-                    # Send transcription result
-                    response = {
-                        "type": "final",
-                        "text": result['text'].strip(),
-                        "participant": participant_id,
-                        "language": result.get('language', participant_data['language']),
-                        "timestamp": int(datetime.datetime.now().timestamp() * 1000)
-                    }
-                    
-                    # Send response based on room type
-                    if room_name.startswith('socketio-'):
-                        connection_manager.send_to_socketio_room(room_name, response)
-                    else:
-                        await connection_manager.send_to_room(room_name, response)
-                    
-                    # Reset audio buffer after successful transcription
-                    participant_data['working_audio'] = b''
-                    participant_data['working_audio_starts_at'] = 0
-                    
-                    print(f"Transcribed from {participant_id} ({language}): {result['text'].strip()}")
-                
-            except Exception as e:
-                print(f"Transcription error for {participant_id}: {e}")
-            finally:
-                participant_data['is_transcribing'] = False
-        
-    except Exception as e:
-        print(f"Error processing audio chunk: {e}")
-
 # WebSocket server
 async def start_websocket_server():
     """Start the WebSocket server for Skynet-compatible streaming whisper"""
@@ -877,114 +712,30 @@ async def start_websocket_server():
     async def websocket_handler(websocket, path):
         await handle_websocket_client(websocket, path)
     
-    try:
-        # Configure server with basic settings
-        server = await websockets.serve(
-            websocket_handler, 
-            "0.0.0.0",  # Listen on IPv4 only for better compatibility
-            5001,
-            # Set ping/pong settings
-            ping_interval=30,
-            ping_timeout=10,
-            # Max message size (10MB for large audio chunks)
-            max_size=10 * 1024 * 1024
-        )
-        print("Local whisper WebSocket server started on ws://0.0.0.0:5001")
-        print("Server configured for proxy compatibility")
-        print(f"Server is running: {server}")
-        await server.wait_closed()
-    except Exception as e:
-        print(f"Error starting WebSocket server: {e}")
-        import traceback
-        traceback.print_exc()
+    # Configure server with basic settings (remove extra_headers - not supported in this version)
+    server = await websockets.serve(
+        websocket_handler, 
+        "::",  # Listen on both IPv4 and IPv6
+        5001,
+        # Set ping/pong settings
+        ping_interval=30,
+        ping_timeout=10,
+        # Max message size (10MB for large audio chunks)
+        max_size=10 * 1024 * 1024
+    )
+    print("Local whisper WebSocket server started on ws://0.0.0.0:5001")
+    print("Server configured for proxy compatibility")
+    await server.wait_closed()
 
 # Add health endpoint for the local whisper websocket server
 @app.route("/local-whisper/health")
 def local_whisper_health():
-    return jsonify({
-        "status": "healthy", 
-        "service": "local_streaming_whisper",
-        "connections": len(connection_manager.connections),
-        "whisper_loaded": whisper_model is not None,
-        "llama_loaded": llama_model is not None
-    })
+    return jsonify({"status": "healthy", "service": "local_streaming_whisper"})
 
 # Add health endpoint for the local whisper websocket server (alternative path)
 @app.route("/health")
 def health():
-    return jsonify({
-        "status": "healthy", 
-        "service": "local_streaming_whisper",
-        "connections": len(connection_manager.connections),
-        "whisper_loaded": whisper_model is not None,
-        "llama_loaded": llama_model is not None
-    })
-
-# Add broadcast endpoint for compatibility with Skynet
-@app.route("/local-whisper/broadcast", methods=["POST"])
-def broadcast_caption():
-    """Broadcast a caption to all WebSocket clients in a room (Skynet compatibility)"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No JSON data provided"}), 400
-        
-        room_name = data.get('room')
-        text = data.get('text')
-        participant = data.get('participant', 'System')
-        
-        if not room_name or not text:
-            return jsonify({"error": "Missing room or text"}), 400
-        
-        # Send to WebSocket clients in the room
-        if room_name in connection_manager.connections:
-            message = {
-                "type": "broadcast",
-                "text": text,
-                "participant": participant,
-                "timestamp": int(datetime.datetime.now().timestamp() * 1000)
-            }
-            
-            # Send message based on room type
-            if room_name.startswith('socketio-'):
-                connection_manager.send_to_socketio_room(room_name, message)
-            else:
-                # Use asyncio to send the message
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(connection_manager.send_to_room(room_name, message))
-                loop.close()
-            
-            return jsonify({
-                "broadcasted": True, 
-                "room": room_name, 
-                "text": text,
-                "participant": participant
-            })
-        else:
-            return jsonify({"error": f"No active connections for room {room_name}"}), 404
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Add room status endpoint
-@app.route("/local-whisper/rooms")
-def get_rooms():
-    """Get status of all active rooms"""
-    rooms_info = {}
-    for room_name, room_data in connection_manager.connections.items():
-        rooms_info[room_name] = {
-            "participants": list(room_data['participants'].keys()),
-            "participant_count": len(room_data['participants']),
-            "meeting_language": room_data.get('meeting_language'),
-            "connected": True
-        }
-    
-    return jsonify({
-        "rooms": rooms_info,
-        "total_rooms": len(rooms_info)
-    })
+    return jsonify({"status": "healthy", "service": "local_streaming_whisper"})
 
 # Add WebSocket endpoint for Skynet compatibility
 @socketio.on('connect', namespace='/local-whisper/ws')
@@ -1001,12 +752,8 @@ def handle_local_whisper_connect(auth):
 
 @socketio.on('audio_data', namespace='/local-whisper/ws')
 def handle_local_whisper_audio(data):
-    """Handle audio data for local whisper transcription via SocketIO"""
+    """Handle audio data for local whisper transcription"""
     try:
-        from flask import request
-        session_id = request.sid if hasattr(request, 'sid') else 'unknown'
-        room_name = f"socketio-{session_id}"
-        
         # Parse the Skynet format: 60-byte header + PCM audio data
         if isinstance(data, bytes) and len(data) >= 60:
             # Extract header (participant_id|language)
@@ -1024,15 +771,49 @@ def handle_local_whisper_audio(data):
             pcm_data = data[60:]
             
             if len(pcm_data) > 0:
-                # Use asyncio to process the audio chunk
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(process_audio_chunk(room_name, participant_id, language, pcm_data))
-                loop.close()
+                # Convert PCM16 bytes to numpy array for Whisper
+                audio_data = np.frombuffer(pcm_data, dtype=np.int16)
+                
+                # Normalize to [-1, 1] range for Whisper
+                audio_float = audio_data.astype(np.float32) / 32768.0
+                
+                # Only transcribe if we have enough audio (at least 0.5 seconds)
+                if len(audio_float) >= 8000:  # 0.5 seconds at 16kHz
+                    # Load model if needed
+                    model = load_whisper_model()
+                    
+                    # Set language if specified and not 'auto'
+                    transcribe_kwargs = {}
+                    if language and language != 'auto':
+                        transcribe_kwargs['language'] = language
+                    
+                    # Transcribe with Whisper
+                    result = model.transcribe(
+                        audio_float,
+                        **transcribe_kwargs,
+                        fp16=False,
+                        beam_size=1,  # Fast transcription
+                        temperature=0.0  # Deterministic output
+                    )
+                    
+                    text = result["text"].strip()
+                    
+                    if text:
+                        print(f"Local whisper transcribed from {participant_id} ({language}): {text}")
+                        
+                        # Send transcription back in expected format
+                        response = {
+                            "type": "final",
+                            "text": text,
+                            "participant": participant_id,
+                            "language": result.get("language", language),
+                            "timestamp": int(datetime.datetime.now().timestamp() * 1000)
+                        }
+                        
+                        emit('transcription', response)
         
     except Exception as e:
-        print(f"Error processing local whisper audio via SocketIO: {e}")
+        print(f"Error processing local whisper audio: {e}")
         emit('error', {
             'type': 'error',
             'message': f"Transcription error: {str(e)}"
@@ -1201,16 +982,9 @@ if __name__ == "__main__":
     
     def start_websocket_server_thread():
         """Start the raw WebSocket server for Skynet compatibility"""
-        try:
-            print("Creating WebSocket server thread...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            print("Starting WebSocket server in thread...")
-            loop.run_until_complete(start_websocket_server())
-        except Exception as e:
-            print(f"Error in WebSocket server thread: {e}")
-            import traceback
-            traceback.print_exc()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(start_websocket_server())
     
     # Start WebSocket server in background thread
     ws_thread = threading.Thread(target=start_websocket_server_thread, daemon=True)

@@ -1,0 +1,60 @@
+Werkzeug appears to be used in a production deployment. Consider switching to a production web server instead.
+Translation da → en is already installed
+Translation en → da is already installed
+Translation da → en already installed
+en → da
+en → fr
+en → de
+en → ko
+en → es
+en → sv
+da → en
+da → fr
+da → de
+da → ko
+da → es
+da → sv
+fr → en
+fr → da
+fr → de
+fr → ko
+fr → es
+fr → sv
+de → en
+de → da
+de → fr
+de → ko
+de → es
+de → sv
+ko → en
+ko → da
+ko → fr
+ko → de
+ko → es
+ko → sv
+es → en
+es → da
+es → fr
+es → de
+es → ko
+es → sv
+sv → en
+sv → da
+sv → fr
+sv → de
+sv → ko
+sv → es
+Current device: 0
+Device name: NVIDIA RTX A2000 12GB
+Total GPU memory: 11.76 GB
+Creating WebSocket server thread...
+Starting WebSocket server in thread...
+Starting local WebSocket server on port 5001...
+Starting Flask-SocketIO server on 0.0.0.0:5000 with WebSocket support
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://195.190.25.66:5000
+[33mPress CTRL+C to quit[0m

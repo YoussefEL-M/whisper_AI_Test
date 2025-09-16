@@ -16,21 +16,21 @@
   <h1 class="text-2xl font-bold mb-6 text-center">Omdan lyd til tekst</h1>
   <h1 class="text-1xl font-bold mb-6 text-center">It's real magic!</h1>
 
-  <!-- Language selection -->
-  <div class="mt-4 w-full max-w-xl">
-    <label for="languageSelect" class="text-gray-200 mb-1 block">Language</label>
-    <select id="languageSelect" class="w-full px-3 py-2 rounded-md bg-gray-800 text-gray-100 border border-gray-600">
-      <option value="">Auto - detect language</option>
-      <option value="da">Danish</option>
-      <option value="en">English</option>
-      <option value="sv">Swedish</option>
-      <option value="de">German</option>
-      <option value="fr">French</option>
-      <option value="es">Spanish</option>
-      <option value="ko">Korean</option>
-      <!-- Add more as needed, using ISO 639-1 codes -->
-    </select>
-  </div>
+<!-- Language selection -->
+<div class="mt-4 w-full max-w-xl">
+  <label for="languageSelect" class="text-gray-200 mb-1 block">Language</label>
+  <select id="languageSelect" class="w-full px-3 py-2 rounded-md bg-gray-800 text-gray-100 border border-gray-600">
+    <option value="">Auto - detect language</option>
+    <option value="da">Danish</option>
+    <option value="en">English</option>
+    <option value="sv">Swedish</option>
+    <option value="de">German</option>
+    <option value="fr">French</option>
+    <option value="es">Spanish</option>
+    <option value="ko">Korean</option>
+    <!-- Add more as needed, using ISO 639-1 codes -->
+  </select>
+</div>
 
   <!-- Drop/Upload zone -->
   <div id="dropZone" class="w-full max-w-xl border-2 border-dashed border-gray-500 rounded-lg p-8 text-center cursor-pointer hover:border-indigo-400 transition">
@@ -45,19 +45,18 @@
 
   <!-- Recording button (toggles dynamically) -->
   <div class="mt-4">
-    <button id="recordBtn" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded shadow">
-      Start Recording
-    </button>  
+  <button id="recordBtn" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded shadow">
+    Start Recording
+  </button>  
   </div>
 
   <!-- Upload/transcribe button -->
   <button id="uploadBtn" class="mt-4 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 rounded shadow disabled:opacity-50" disabled>Transcribe</button>
 
   <!-- Export SRT button-->
-  <button id="uploadSrtBtn" class="mt-4 ml-2 px-6 py-2 bg-purple-600 hover:bg-purple-500 rounded shadow disabled:opacity-50" disabled>Export SRT</button>
+   <button id="uploadSrtBtn" class="mt-4 ml-2 px-6 py-2 bg-purple-600 hover:bg-purple-500 rounded shadow disabled:opacity-50" disabled>Export SRT</button>
 
-  <!-- NEW: Summarize button -->
-  <button id="summarizeBtn" class="mt-4 ml-2 px-6 py-2 bg-orange-600 hover:bg-orange-500 rounded shadow disabled:opacity-50" disabled>Create Summary (.txt)</button>
+   <button id="paraphraseSrtFromJsonBtn" class="mt-4 ml-2 px-6 py-2 bg-yellow-600 hover:bg-yellow-500 rounded shadow disabled:opacity-50" disabled>Paraphrase From Transcript</button>
 
   <!-- Loading spinner -->
   <div id="loading" class="hidden mt-6">
@@ -66,15 +65,6 @@
       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
     </svg>
     <p class="mt-2 text-sm text-gray-400">Transcribing… please wait</p>
-  </div>
-
-  <!-- Loading spinner for summarization -->
-  <div id="loadingSummary" class="hidden mt-6">
-    <svg class="animate-spin h-8 w-8 text-orange-400 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-    </svg>
-    <p class="mt-2 text-sm text-gray-400">Creating summary… please wait</p>
   </div>
 
   <!-- Result -->
@@ -92,22 +82,23 @@ const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const uploadBtn = document.getElementById('uploadBtn');
 const loading = document.getElementById('loading');
-const loadingSummary = document.getElementById('loadingSummary');
 const resultCard = document.getElementById('resultCard');
 const transcriptText = document.getElementById('transcriptText');
 const jsonOutput = document.getElementById('jsonOutput');
 const audioPreviewContainer = document.getElementById('audioPreviewContainer');
 const audioPreview = document.getElementById('audioPreview');
 
+const startRecordingBtn = document.getElementById('startRecording');
+const stopRecordingBtn = document.getElementById('stopRecording');
+
 let selectedFile = null;
 let mediaRecorder;
 let audioChunks = [];
-let currentTranscriptData = null; // Store the current transcript JSON
 
 function showFile(file) {
   selectedFile = file;
   uploadBtn.disabled = false;
-  uploadSrtBtn.disabled = false;  
+  uploadSrtBtn.disabled = false; 
 
   const lang = languageSelect.value || langCode;
   const fileSelectedFn = translations[lang]?.fileSelected || translations.en.fileSelected;
@@ -176,14 +167,6 @@ recordBtn.onclick = async () => {
 // ==== Transcribe submission ====
 const languageSelect = document.getElementById('languageSelect');
 
-function safeJsonParse(text) {
-  try {
-    return { success: true, data: JSON.parse(text) };
-  } catch (e) {
-    return { success: false, error: e, text };
-  }
-}
-
 uploadBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
   const formData = new FormData();
@@ -197,33 +180,16 @@ uploadBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/transcribe', { method: 'POST', body: formData });
     const resText = await res.text();
-
-    if (!res.ok) {
-      alert("Server returned error:\n" + resText);
-      return;
+    try {
+      const data = JSON.parse(resText);
+      transcriptText.textContent = data.transcript || "[no transcription]";
+      jsonOutput.textContent = JSON.stringify(data, null, 2);
+      hljs.highlightElement(jsonOutput);
+      loading.classList.add('hidden');
+      resultCard.classList.remove('hidden');
+    } catch(e) {
+      alert("Server response is not valid JSON:\n" + resText);
     }
-
-    const { success, data, error, text } = safeJsonParse(resText);
-    if (!success) {
-      alert("Failed to parse server JSON response:\n" + text);
-      console.error("JSON parse error:", error);
-      return;
-    }
-
-    // Store the transcript data for summarization
-    currentTranscriptData = data;
-
-    // Use parsed data if success
-    transcriptText.textContent = data.transcript || "[no transcription]";
-    jsonOutput.textContent = JSON.stringify(data, null, 2);
-    hljs.highlightElement(jsonOutput);
-    loading.classList.add('hidden');
-    resultCard.classList.remove('hidden');
-
-    // Enable the summarize button
-    summarizeBtn.disabled = false;
-    uploadBtn.disabled = false;
-    uploadSrtBtn.disabled = false;
   } catch (err) {
     alert("Error: " + err);
   } finally {
@@ -260,46 +226,6 @@ uploadSrtBtn.addEventListener('click', async () => {
   }
 });
 
-// ==== NEW: Summarize button functionality ====
-const summarizeBtn = document.getElementById('summarizeBtn');
-
-summarizeBtn.addEventListener('click', async () => {
-  if (!currentTranscriptData) {
-    alert('No transcript data available. Please transcribe first.');
-    return;
-  }
-
-  summarizeBtn.disabled = true;
-  loadingSummary.classList.remove('hidden');
-
-  try {
-    const res = await fetch('/summarize_from_json', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(currentTranscriptData)
-    });
-
-    if (!res.ok) throw new Error(await res.text());
-
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'summary.txt';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-  } catch (err) {
-    alert('Error creating summary: ' + err.message);
-  } finally {
-    summarizeBtn.disabled = false;
-    loadingSummary.classList.add('hidden');
-  }
-});
 const translations = {
   en: {
     title: "Audio Transcription with Whisper",
@@ -398,21 +324,21 @@ const translations = {
     fileSelected: name => `Seleccionado: ${name}`
   },
   ko: {
-    title: "Whisper로 오디오 전사",
-    subtitle: "오디오를 텍스트로 변환",
-    magic: "진짜 마법 같아요!",
-    dragDrop: "오디오 파일을 여기로 드래그하거나 클릭해서 선택하세요",
-    languageLabel: "언어",
-    recordStart: "녹음 시작",
-    recordStop: "녹음 중지",
-    transcribe: "전사하기",
-    exportSrt: "SRT 내보내기",
-    loading: "전사 중... 잠시만 기다려주세요",
-    transcript: "전사 결과",
-    json: "전체 JSON 응답",
-    recording: "녹음 중... 말씀해주세요.",
-    fileSelected: name => `선택됨: ${name}`
-  }
+  title: "Whisper로 오디오 전사",
+  subtitle: "오디오를 텍스트로 변환",
+  magic: "진짜 마법 같아요!",
+  dragDrop: "오디오 파일을 여기로 드래그하거나 클릭해서 선택하세요",
+  languageLabel: "언어",
+  recordStart: "녹음 시작",
+  recordStop: "녹음 중지",
+  transcribe: "전사하기",
+  exportSrt: "SRT 내보내기",
+  loading: "전사 중... 잠시만 기다려주세요",
+  transcript: "전사 결과",
+  json: "전체 JSON 응답",
+  recording: "녹음 중... 말씀해주세요.",
+  fileSelected: name => `선택됨: ${name}`
+}
 };
 
 function applyTranslations(lang) {
@@ -436,15 +362,114 @@ function applyTranslations(lang) {
   document.querySelector('#resultCard h2').textContent = t.transcript;
   document.querySelector('#resultCard h3').textContent = t.json;
 
+  // Hook into record button toggle text
   recordBtn.dataset.textStart = t.recordStart;
   recordBtn.dataset.textStop = t.recordStop;
+
+  // Custom message for dropzone update
   recordBtn.dataset.textRecording = t.recording;
   dropZone.dataset.fileSelected = t.fileSelected;
 }
 
+// Detect browser language and apply
 const userLang = navigator.language || navigator.userLanguage || "en";
 const langCode = userLang.split('-')[0];
 applyTranslations(langCode);
+// paraphrase
+const paraphraseSrtFromJsonBtn = document.getElementById('paraphraseSrtFromJsonBtn');
+
+paraphraseSrtFromJsonBtn.addEventListener('click', async () => {
+  // Disable button during processing
+  paraphraseSrtFromJsonBtn.disabled = true;
+
+  try {
+    // Extract segments from the last JSON response shown in jsonOutput
+    const data = JSON.parse(jsonOutput.textContent);
+    if (!data.segments || data.segments.length === 0) {
+      alert('No segments found in transcript JSON.');
+      return;
+    }
+
+    // Convert JSON segments to SRT format
+    const subtitles = data.segments.map((seg, index) => {
+      // Format time (HH:MM:SS,mmm)
+      const toSrtTime = (seconds) => {
+        const date = new Date(null);
+        date.setSeconds(seconds);
+        const iso = date.toISOString().substr(11, 12); // HH:MM:SS.sss
+        return iso.replace('.', ',');
+      };
+      return `${index + 1}\n${toSrtTime(seg.start)} --> ${toSrtTime(seg.end)}\n${seg.text.trim()}\n`;
+    }).join('\n');
+
+    // Create a Blob of the SRT text
+    const srtBlob = new Blob([subtitles], { type: 'application/x-subrip' });
+    const formData = new FormData();
+    formData.append('file', new File([srtBlob], 'from_transcript.srt', { type: 'application/x-subrip' }));
+
+    // POST to paraphrase API
+    const res = await fetch('/paraphrase_srt', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+
+    // Download the paraphrased SRT file
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'paraphrased_from_transcript.srt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+  } catch (err) {
+    alert('Error paraphrasing from transcript JSON: ' + err.message);
+  } finally {
+    paraphraseSrtFromJsonBtn.disabled = false;
+  }
+});
+
+// Enable button after successful transcription
+function handleTranscriptionSuccess(data) {
+  transcriptText.textContent = data.transcript || '[no transcription]';
+  jsonOutput.textContent = JSON.stringify(data, null, 2);
+  hljs.highlightElement(jsonOutput);
+  loading.classList.add('hidden');
+  resultCard.classList.remove('hidden');
+
+  paraphraseSrtFromJsonBtn.disabled = false;  // Enable paraphrase from transcript button
+  uploadBtn.disabled = false;
+  uploadSrtBtn.disabled = false;
+  paraphraseSrtBtn.disabled = false;
+}
+
+// Replace your existing transcription response handler with:
+uploadBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+  formData.append("language", languageSelect.value);
+
+  loading.classList.remove('hidden');
+  resultCard.classList.add('hidden');
+  uploadBtn.disabled = true;
+
+  try {
+    const res = await fetch('/transcribe', { method: 'POST', body: formData });
+    const resText = await res.text();
+    try {
+      const data = JSON.parse(resText);
+      handleTranscriptionSuccess(data);
+    } catch(e) {
+      alert("Server response is not valid JSON:\n" + resText);
+    }
+  } catch (err) {
+    alert("Error: " + err);
+  } finally {
+    loading.classList.add('hidden');
+    uploadBtn.disabled = false;
+  }
+});
 
 </script>
 

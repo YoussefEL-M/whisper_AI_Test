@@ -56,8 +56,7 @@
   <!-- Export SRT button-->
   <button id="uploadSrtBtn" class="mt-4 ml-2 px-6 py-2 bg-purple-600 hover:bg-purple-500 rounded shadow disabled:opacity-50" disabled>Export SRT</button>
 
-  <!-- NEW: Summarize button -->
-  <button id="summarizeBtn" class="mt-4 ml-2 px-6 py-2 bg-orange-600 hover:bg-orange-500 rounded shadow disabled:opacity-50" disabled>Create Summary (.txt)</button>
+  <button id="paraphraseSrtFromJsonBtn" class="mt-4 ml-2 px-6 py-2 bg-yellow-600 hover:bg-yellow-500 rounded shadow disabled:opacity-50" disabled>Paraphrase From Transcript</button>
 
   <!-- Loading spinner -->
   <div id="loading" class="hidden mt-6">
@@ -66,15 +65,6 @@
       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
     </svg>
     <p class="mt-2 text-sm text-gray-400">Transcribing… please wait</p>
-  </div>
-
-  <!-- Loading spinner for summarization -->
-  <div id="loadingSummary" class="hidden mt-6">
-    <svg class="animate-spin h-8 w-8 text-orange-400 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-    </svg>
-    <p class="mt-2 text-sm text-gray-400">Creating summary… please wait</p>
   </div>
 
   <!-- Result -->
@@ -92,17 +82,18 @@ const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const uploadBtn = document.getElementById('uploadBtn');
 const loading = document.getElementById('loading');
-const loadingSummary = document.getElementById('loadingSummary');
 const resultCard = document.getElementById('resultCard');
 const transcriptText = document.getElementById('transcriptText');
 const jsonOutput = document.getElementById('jsonOutput');
 const audioPreviewContainer = document.getElementById('audioPreviewContainer');
 const audioPreview = document.getElementById('audioPreview');
 
+const startRecordingBtn = document.getElementById('startRecording');
+const stopRecordingBtn = document.getElementById('stopRecording');
+
 let selectedFile = null;
 let mediaRecorder;
 let audioChunks = [];
-let currentTranscriptData = null; // Store the current transcript JSON
 
 function showFile(file) {
   selectedFile = file;
@@ -210,9 +201,6 @@ uploadBtn.addEventListener('click', async () => {
       return;
     }
 
-    // Store the transcript data for summarization
-    currentTranscriptData = data;
-
     // Use parsed data if success
     transcriptText.textContent = data.transcript || "[no transcription]";
     jsonOutput.textContent = JSON.stringify(data, null, 2);
@@ -220,8 +208,7 @@ uploadBtn.addEventListener('click', async () => {
     loading.classList.add('hidden');
     resultCard.classList.remove('hidden');
 
-    // Enable the summarize button
-    summarizeBtn.disabled = false;
+    paraphraseSrtFromJsonBtn.disabled = false;
     uploadBtn.disabled = false;
     uploadSrtBtn.disabled = false;
   } catch (err) {
@@ -260,46 +247,52 @@ uploadSrtBtn.addEventListener('click', async () => {
   }
 });
 
-// ==== NEW: Summarize button functionality ====
-const summarizeBtn = document.getElementById('summarizeBtn');
+const paraphraseSrtFromJsonBtn = document.getElementById('paraphraseSrtFromJsonBtn');
 
-summarizeBtn.addEventListener('click', async () => {
-  if (!currentTranscriptData) {
-    alert('No transcript data available. Please transcribe first.');
-    return;
-  }
-
-  summarizeBtn.disabled = true;
-  loadingSummary.classList.remove('hidden');
+paraphraseSrtFromJsonBtn.addEventListener('click', async () => {
+  paraphraseSrtFromJsonBtn.disabled = true;
 
   try {
-    const res = await fetch('/summarize_from_json', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(currentTranscriptData)
-    });
+    const data = JSON.parse(jsonOutput.textContent);
+    if (!data.segments || data.segments.length === 0) {
+      alert('No segments found in transcript JSON.');
+      return;
+    }
 
+    const subtitles = data.segments.map((seg, index) => {
+      const toSrtTime = (seconds) => {
+        const date = new Date(null);
+        date.setSeconds(seconds);
+        const iso = date.toISOString().substr(11, 12);
+        return iso.replace('.', ',');
+      };
+      return `${index + 1}\n${toSrtTime(seg.start)} --> ${toSrtTime(seg.end)}\n${seg.text.trim()}\n`;
+    }).join('\n');
+
+    const srtBlob = new Blob([subtitles], { type: 'application/x-subrip' });
+    const formData = new FormData();
+    formData.append('file', new File([srtBlob], 'from_transcript.srt', { type: 'application/x-subrip' }));
+
+    const res = await fetch('/paraphrase_srt', { method: 'POST', body: formData });
     if (!res.ok) throw new Error(await res.text());
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'summary.txt';
+    a.download = 'paraphrased_from_transcript.srt';
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
 
   } catch (err) {
-    alert('Error creating summary: ' + err.message);
+    alert('Error paraphrasing from transcript JSON: ' + err.message);
   } finally {
-    summarizeBtn.disabled = false;
-    loadingSummary.classList.add('hidden');
+    paraphraseSrtFromJsonBtn.disabled = false;
   }
 });
+
 const translations = {
   en: {
     title: "Audio Transcription with Whisper",
