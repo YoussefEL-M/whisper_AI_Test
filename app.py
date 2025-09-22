@@ -40,12 +40,25 @@ def load_whisper_model():
     """Load Whisper model on demand"""
     global whisper_model
     if whisper_model is None:
-        print("Loading Whisper model...")
         try:
+            print("Loading Whisper model...")
             whisper_model = whisper.load_model("turbo", device=DEVICE)
+            print("Whisper turbo model loaded successfully")
         except torch.cuda.OutOfMemoryError:
             print("Turbo model too large, falling back to base model")
-            whisper_model = whisper.load_model("base", device=DEVICE)
+            try:
+                whisper_model = whisper.load_model("base", device=DEVICE)
+                print("Whisper base model loaded successfully")
+            except Exception as e:
+                print(f"Failed to load base model: {e}")
+                print("Falling back to small model...")
+                whisper_model = whisper.load_model("small", device=DEVICE)
+                print("Whisper small model loaded successfully")
+        except Exception as e:
+            print(f"Failed to load Whisper model: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     return whisper_model
 
 
@@ -64,24 +77,33 @@ def load_llama_model():
     """Load TinyLlama model on demand with error handling"""
     global llama_model, tokenizer
     if llama_model is None:
-        print("Loading TinyLlama model...")
-        tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path)
         try:
-            llama_model = LlamaForCausalLM.from_pretrained(
-                model_name_or_path,
-                torch_dtype=torch.float16,
-                device_map="auto"
-            )
-            print("TinyLlama loaded on GPU")
+            print("Loading TinyLlama model...")
+            tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path)
+            
+            # Try GPU first
+            try:
+                llama_model = LlamaForCausalLM.from_pretrained(
+                    model_name_or_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto"
+                )
+                print("TinyLlama loaded on GPU")
+            except Exception as e:
+                print(f"Failed to load on GPU: {e}")
+                print("Falling back to CPU...")
+                llama_model = LlamaForCausalLM.from_pretrained(
+                    model_name_or_path,
+                    torch_dtype=torch.float32,
+                    device_map="cpu"
+                )
+                print("TinyLlama loaded on CPU")
         except Exception as e:
-            print(f"Failed to load on GPU: {e}")
-            print("Falling back to CPU...")
-            llama_model = LlamaForCausalLM.from_pretrained(
-                model_name_or_path,
-                torch_dtype=torch.float32,
-                device_map="cpu"
-            )
-            print("TinyLlama loaded on CPU")
+            print(f"Failed to load TinyLlama model: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+            
     return llama_model, tokenizer
 
 
@@ -202,7 +224,14 @@ def run_llama_summary(prompt: str) -> str:
     """Run TinyLlama on a given prompt and return its decoded output"""
     global llama_model, tokenizer
     try:
+        if not prompt.strip():
+            return ""
+            
         model, tok = load_llama_model()
+        if model is None or tok is None:
+            print("[Summarizer] Model or tokenizer not loaded")
+            return ""
+            
         inputs = tok(prompt, return_tensors="pt", max_length=768, truncation=True)
 
         if next(model.parameters()).is_cuda:
@@ -229,27 +258,35 @@ def run_llama_summary(prompt: str) -> str:
         return decoded
     except Exception as e:
         print(f"[Summarizer] Llama failed: {e}")
+        import traceback
+        traceback.print_exc()
         return ""
 
 
 def summarize_transcript(full_text: str) -> str:
     """Create a summary of the transcript using TinyLlama (with chunking + fallback)."""
     try:
+        if not full_text.strip():
+            return "No text content to summarize."
+            
         # Unload Whisper to save VRAM
         unload_whisper_model()
 
         partial_summaries = []
         for chunk in chunk_text(full_text, max_chars=1500):
+            if not chunk.strip():
+                continue
+                
             prompt = (
                 "Summarize the following transcript in 5–10 sentences:\n\n"
                 f"{chunk.strip()}\n\nSummary:"
             )
             summary_piece = run_llama_summary(prompt)
-            if summary_piece:
+            if summary_piece and summary_piece.strip():
                 partial_summaries.append(summary_piece)
 
         if not partial_summaries:
-            raise RuntimeError("Llama returned no useful summaries")
+            return "Unable to generate summary. The text may be too short or the model may be unavailable."
 
         # If transcript was long → combine partial summaries
         if len(partial_summaries) > 1:
@@ -329,38 +366,61 @@ def index():
 
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
-    if "file" not in request.files:
-        abort(400, description="No file uploaded")
-    audio_file = request.files["file"]
-    language = request.form.get("language") or None
-
-    with NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.filename)[1]) as tmp_input:
-        audio_file.save(tmp_input.name)
-        tmp_input_path = tmp_input.name
-
-    with NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-        tmp_wav_path = tmp_wav.name
-
     try:
-        ffmpeg.input(tmp_input_path).output(tmp_wav_path, format="wav", ar="16k").run(quiet=True, overwrite_output=True)
-        unload_llama_model()
-        model = load_whisper_model()
-        transcribe_kwargs = {}
-        if language:
-            transcribe_kwargs['language'] = language
-        result = model.transcribe(tmp_wav_path, **transcribe_kwargs)
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+        
+        audio_file = request.files["file"]
+        if audio_file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+            
+        language = request.form.get("language") or None
 
-        return jsonify({
-            "transcript": result["text"],
-            "language": result.get("language", ""),
-            "segments": result.get("segments", [])
-        })
+        with NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.filename)[1]) as tmp_input:
+            audio_file.save(tmp_input.name)
+            tmp_input_path = tmp_input.name
 
-    finally:
-        if os.path.exists(tmp_input_path):
-            os.remove(tmp_input_path)
-        if os.path.exists(tmp_wav_path):
-            os.remove(tmp_wav_path)
+        with NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+            tmp_wav_path = tmp_wav.name
+
+        try:
+            # Convert audio to WAV format
+            ffmpeg.input(tmp_input_path).output(tmp_wav_path, format="wav", ar="16k").run(quiet=True, overwrite_output=True)
+            
+            # Unload Llama model to free memory
+            unload_llama_model()
+            
+            # Load Whisper model
+            model = load_whisper_model()
+            
+            # Prepare transcription parameters
+            transcribe_kwargs = {}
+            if language:
+                transcribe_kwargs['language'] = language
+            
+            # Perform transcription
+            result = model.transcribe(tmp_wav_path, **transcribe_kwargs)
+
+            return jsonify({
+                "transcript": result["text"],
+                "language": result.get("language", ""),
+                "segments": result.get("segments", [])
+            })
+
+        except Exception as e:
+            print(f"Transcription error: {e}")
+            return jsonify({"error": f"Transcription failed: {str(e)}"}), 500
+
+        finally:
+            # Clean up temporary files
+            if os.path.exists(tmp_input_path):
+                os.remove(tmp_input_path)
+            if os.path.exists(tmp_wav_path):
+                os.remove(tmp_wav_path)
+                
+    except Exception as e:
+        print(f"Transcribe endpoint error: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
 @app.route("/summarize_from_json", methods=["POST"])
@@ -396,31 +456,47 @@ def summarize_from_json():
 
 @app.route("/paraphrase_srt", methods=["POST"])
 def paraphrase_srt():
-    if "file" not in request.files:
-        abort(400, description="No file uploaded")
-
-    srt_file = request.files["file"]
-    with NamedTemporaryFile(delete=False, suffix=".srt") as tmp_file:
-        srt_file.save(tmp_file.name)
-        tmp_path = tmp_file.name
-
     try:
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            srt_content = f.read()
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
 
-        subtitles = list(srt.parse(srt_content))
-        full_text = " ".join([sub.content for sub in subtitles])
-        summary = summarize_transcript(full_text)
+        srt_file = request.files["file"]
+        if srt_file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+            
+        with NamedTemporaryFile(delete=False, suffix=".srt") as tmp_file:
+            srt_file.save(tmp_file.name)
+            tmp_path = tmp_file.name
 
-        return Response(
-            summary,
-            mimetype="text/plain",
-            headers={
-                "Content-Disposition": 'attachment; filename="summary.txt"'
-            }
-        )
-    finally:
-        os.remove(tmp_path)
+        try:
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                srt_content = f.read()
+
+            subtitles = list(srt.parse(srt_content))
+            full_text = " ".join([sub.content for sub in subtitles])
+            
+            if not full_text.strip():
+                return jsonify({"error": "No text content found in SRT file"}), 400
+                
+            summary = summarize_transcript(full_text)
+
+            return Response(
+                summary,
+                mimetype="text/plain",
+                headers={
+                    "Content-Disposition": 'attachment; filename="summary.txt"'
+                }
+            )
+        except Exception as e:
+            print(f"Paraphrase error: {e}")
+            return jsonify({"error": f"Paraphrase failed: {str(e)}"}), 500
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
+    except Exception as e:
+        print(f"Paraphrase endpoint error: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
 @app.route("/transcribe/srt", methods=["POST"])
@@ -471,20 +547,87 @@ def transcribe_srt():
 
 @app.route("/memory_status", methods=["GET"])
 def memory_status():
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated(0) / 1024**3
-        reserved = torch.cuda.memory_reserved(0) / 1024**3
-        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-
-        return jsonify({
-            "allocated_gb": round(allocated, 2),
-            "reserved_gb": round(reserved, 2),
-            "total_gb": round(total, 2),
-            "free_gb": round(total - allocated, 2),
+    try:
+        status = {
+            "device": DEVICE,
+            "cuda_available": torch.cuda.is_available(),
             "whisper_loaded": whisper_model is not None,
-            "llama_loaded": llama_model is not None
-        })
-    return jsonify({"error": "CUDA not available"})
+            "llama_loaded": llama_model is not None,
+            "tokenizer_loaded": tokenizer is not None
+        }
+        
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(0) / 1024**3
+            reserved = torch.cuda.memory_reserved(0) / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            
+            status.update({
+                "allocated_gb": round(allocated, 2),
+                "reserved_gb": round(reserved, 2),
+                "total_gb": round(total, 2),
+                "free_gb": round(total - allocated, 2),
+                "utilization_percent": round((allocated / total) * 100, 1)
+            })
+        else:
+            status["error"] = "CUDA not available - running on CPU"
+            
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": f"Memory status error: {str(e)}"}), 500
+
+@app.route("/test_models", methods=["GET"])
+def test_models():
+    """Test if models can be loaded and work properly"""
+    try:
+        results = {
+            "whisper_test": False,
+            "llama_test": False,
+            "errors": []
+        }
+        
+        # Test Whisper
+        try:
+            whisper_model_test = load_whisper_model()
+            if whisper_model_test is not None:
+                results["whisper_test"] = True
+            else:
+                results["errors"].append("Whisper model failed to load")
+        except Exception as e:
+            results["errors"].append(f"Whisper test failed: {str(e)}")
+        
+        # Test Llama
+        try:
+            llama_model_test, tokenizer_test = load_llama_model()
+            if llama_model_test is not None and tokenizer_test is not None:
+                # Try a simple generation
+                test_prompt = "Hello, this is a test."
+                inputs = tokenizer_test(test_prompt, return_tensors="pt", max_length=50, truncation=True)
+                if next(llama_model_test.parameters()).is_cuda:
+                    inputs = inputs.to(DEVICE)
+                
+                with torch.no_grad():
+                    outputs = llama_model_test.generate(
+                        **inputs,
+                        max_new_tokens=10,
+                        temperature=0.7,
+                        do_sample=True,
+                        pad_token_id=tokenizer_test.eos_token_id,
+                        eos_token_id=tokenizer_test.eos_token_id
+                    )
+                
+                decoded = tokenizer_test.decode(outputs[0], skip_special_tokens=True).strip()
+                if decoded:
+                    results["llama_test"] = True
+                else:
+                    results["errors"].append("Llama model generated empty output")
+            else:
+                results["errors"].append("Llama model or tokenizer failed to load")
+        except Exception as e:
+            results["errors"].append(f"Llama test failed: {str(e)}")
+        
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": f"Model test error: {str(e)}"}), 500
 
 @app.route("/translate", methods=["POST"])
 def translate():
