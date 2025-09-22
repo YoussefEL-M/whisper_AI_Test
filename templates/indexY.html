@@ -66,6 +66,7 @@
       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
     </svg>
     <p class="mt-2 text-sm text-gray-400">Transcribing… please wait</p>
+    <p class="mt-1 text-xs text-gray-500">Large files may take several minutes to process</p>
   </div>
 
   <!-- Loading spinner for summarization -->
@@ -245,9 +246,29 @@ uploadBtn.addEventListener('click', async () => {
   uploadBtn.disabled = true;
   summarizeBtn.disabled = true;
 
+  // Update loading message for large files
+  const fileSizeMB = selectedFile.size / (1024 * 1024);
+  if (fileSizeMB > 10) {
+    loading.querySelector('p').textContent = `Processing large file (${fileSizeMB.toFixed(1)}MB)... This may take several minutes. Please be patient.`;
+  }
+
   try {
     const endpoint = mode === "translate" ? "/translate" : "/transcribe";
-    const res = await fetch(endpoint, { method: 'POST', body: formData });
+    const res = await fetch(endpoint, { 
+      method: 'POST', 
+      body: formData,
+      // Add timeout handling
+      signal: AbortSignal.timeout(1800000) // 30 minutes timeout
+    });
+
+    // Check if response is HTML (error page) instead of JSON
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const errorText = await res.text();
+      alert("Server Error (504 Gateway Timeout):\nThe server is taking too long to respond. This is normal for large files - the server needs time to process them. Please wait and try again, or check the server status.");
+      console.error("Non-JSON response:", errorText);
+      return;
+    }
 
     const data = await res.json();
 

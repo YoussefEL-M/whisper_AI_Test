@@ -38,4 +38,4 @@ echo "   - WebSocket: wss://whisper.semaphor.dk/ws"
 echo ""
 
 # Run with nix-shell
-nix-shell --run "python3 sockpy.py"
+nix-shell --run "python3 app.py"

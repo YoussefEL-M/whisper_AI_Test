@@ -333,27 +333,21 @@ ALLOWED_AUDIO = {'.mp3', '.wav', '.flac', '.m4a', '.ogg', '.webm'}
 ALLOWED_VIDEO = {'.mp4', '.mov', '.avi', '.webm', '.mkv'}
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1 GB
 socketio = SocketIO(app, cors_allowed_origins=["https://rosetta.semaphor.dk","https://meet2.semaphor.dk"])
 
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1GB max request size
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-
-# Add request timeout handling
-@app.before_request
-def limit_remote_addr():
-    # Log incoming requests for debugging
-    print(f"Incoming request: {request.method} {request.path} - Content-Length: {request.content_length}")
-
 @app.errorhandler(413)
-def too_large(e):
-    return jsonify({"error": "File too large. Please reduce file size and try again."}), 413
+def request_entity_too_large(error):
+    return jsonify({"error": "File too large"}), 413
 
-@app.errorhandler(Exception)
-def handle_exception(e):
-    print(f"Unhandled exception: {e}")
-    import traceback
-    traceback.print_exc()
-    return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({"error": str(error)}), 400
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "Internal server error"}), 500
+
 
 @socketio.on('audio_data', namespace='/live-cc')
 def handle_audio(data):
@@ -383,23 +377,6 @@ def handle_audio(data):
 def index():
     return render_template("indexY.html")
 
-@app.route("/status")
-def status():
-    """Simple status endpoint that doesn't require models to be loaded"""
-    return jsonify({
-        "status": "running",
-        "message": "Flask app is running",
-        "timestamp": int(datetime.datetime.now().timestamp() * 1000)
-    })
-
-@app.route("/progress")
-def progress():
-    """Progress endpoint to check if models are loading"""
-    return jsonify({
-        "whisper_loading": whisper_model is None,
-        "llama_loading": llama_model is None,
-        "message": "Models are loading..." if whisper_model is None else "Models ready"
-    })
 
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
@@ -411,21 +388,18 @@ def transcribe():
         if audio_file.filename == '':
             return jsonify({"error": "No file selected"}), 400
         
-        # Add file size check (1GB limit)
-        MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1GB in bytes
+        MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1gb in bytes
         audio_file.seek(0, 2)  # Seek to end
         file_size = audio_file.tell()
         audio_file.seek(0)  # Reset to beginning
-        
+
         if file_size > MAX_FILE_SIZE:
             return jsonify({"error": f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"}), 413
+
             
-        print(f"Processing file: {audio_file.filename}, Size: {file_size / (1024*1024):.2f}MB")
-        
         language = request.form.get("language") or None
 
         with NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.filename)[1]) as tmp_input:
-            print(f"Saving to temporary file: {tmp_input.name}")
             audio_file.save(tmp_input.name)
             tmp_input_path = tmp_input.name
 
@@ -433,71 +407,23 @@ def transcribe():
             tmp_wav_path = tmp_wav.name
 
         try:
-            print("Converting audio to WAV format...")
             # Convert audio to WAV format
             ffmpeg.input(tmp_input_path).output(tmp_wav_path, format="wav", ar="16k").run(quiet=True, overwrite_output=True)
             
-            print("Unloading Llama model to free memory...")
             # Unload Llama model to free memory
             unload_llama_model()
             
-            print("Loading Whisper model...")
             # Load Whisper model
             model = load_whisper_model()
-            
-            if model is None:
-                return jsonify({"error": "Failed to load Whisper model"}), 500
             
             # Prepare transcription parameters
             transcribe_kwargs = {}
             if language:
                 transcribe_kwargs['language'] = language
             
-            print("Starting transcription...")
-            print(f"File size: {file_size / (1024*1024):.2f}MB - This may take several minutes...")
+            # Perform transcription
+            result = model.transcribe(tmp_wav_path, **transcribe_kwargs)
 
-            # Check available memory before transcription
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated(0) / 1024**3
-                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                print(f"GPU memory before transcription: {allocated:.2f}GB / {total:.2f}GB")
-                
-                if allocated > (total * 0.8):  # If using more than 80% of GPU memory
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    print("Cleared GPU cache due to high memory usage")
-            
-            # Perform transcription with error handling
-            # Perform transcription with error handling
-            try:
-                print(f"Starting Whisper transcription on file size: {os.path.getsize(tmp_wav_path) / (1024*1024):.2f}MB")
-                
-                # Add progress callback for very large files
-                def progress_callback(progress):
-                    print(f"Transcription progress: {progress:.1%}")
-                
-                result = model.transcribe(
-                    tmp_wav_path, 
-                    verbose=True,  # Enable verbose logging
-                    **transcribe_kwargs
-                )
-                
-            except torch.cuda.OutOfMemoryError:
-                print("GPU out of memory, clearing cache and retrying...")
-                torch.cuda.empty_cache()
-                gc.collect()
-                # Try again with smaller model or CPU
-                unload_whisper_model()
-                print("Loading smaller Whisper model on CPU...")
-                model = whisper.load_model("base", device="cpu")
-                result = model.transcribe(tmp_wav_path, verbose=True, **transcribe_kwargs)
-            except Exception as transcribe_error:
-                print(f"Transcription failed: {transcribe_error}")
-                import traceback
-                traceback.print_exc()
-                raise transcribe_error
-
-            print("Transcription completed successfully")
             return jsonify({
                 "transcript": result["text"],
                 "language": result.get("language", ""),
@@ -506,25 +432,19 @@ def transcribe():
 
         except Exception as e:
             print(f"Transcription error: {e}")
-            import traceback
-            traceback.print_exc()
             return jsonify({"error": f"Transcription failed: {str(e)}"}), 500
 
         finally:
             # Clean up temporary files
-            try:
-                if os.path.exists(tmp_input_path):
-                    os.remove(tmp_input_path)
-                if os.path.exists(tmp_wav_path):
-                    os.remove(tmp_wav_path)
-            except Exception as cleanup_error:
-                print(f"Cleanup error: {cleanup_error}")
-
+            if os.path.exists(tmp_input_path):
+                os.remove(tmp_input_path)
+            if os.path.exists(tmp_wav_path):
+                os.remove(tmp_wav_path)
+                
     except Exception as e:
         print(f"Transcribe endpoint error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route("/summarize_from_json", methods=["POST"])
 def summarize_from_json():
@@ -1163,8 +1083,7 @@ def health():
         "service": "local_streaming_whisper",
         "connections": len(connection_manager.connections),
         "whisper_loaded": whisper_model is not None,
-        "llama_loaded": llama_model is not None,
-        "message": "Server is running and ready to accept requests"
+        "llama_loaded": llama_model is not None
     })
 
 # Add broadcast endpoint for compatibility with Skynet
