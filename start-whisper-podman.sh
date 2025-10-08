@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Whisper App Startup Script
+# Whisper App Startup Script for Podman
 # This script starts the Whisper app using Podman instead of Nix shell
 
 echo "🎙️ Starting Whisper App with Podman..."
@@ -33,24 +33,21 @@ stop_existing_container() {
 
 # Function to build and start container
 start_container() {
-    echo "🔨 Building Whisper container with full functionality..."
-    podman build -f Dockerfile.full -t local-whisper:latest .
+    echo "🔨 Building Whisper container..."
+    podman build -t local-whisper:latest .
     
     if [ $? -ne 0 ]; then
         echo "❌ Error: Failed to build container"
         exit 1
     fi
     
-    echo "🚀 Starting Whisper transcription service with CUDA support..."
+    echo "🚀 Starting Whisper transcription service..."
     podman run -d \
         --name local-whisper \
         --restart unless-stopped \
         --device /dev/nvidia0:/dev/nvidia0 \
         --device /dev/nvidiactl:/dev/nvidiactl \
         --device /dev/nvidia-uvm:/dev/nvidia-uvm \
-        -v /usr/lib/cuda:/usr/lib/cuda:ro \
-        -v /usr/include/cuda:/usr/include/cuda:ro \
-        -v /usr/lib/x86_64-linux-gnu/nvidia/current:/usr/lib/x86_64-linux-gnu/nvidia/current:ro \
         -p 5000:5000 \
         -p 5001:5001 \
         -v ./models:/app/models \
@@ -65,10 +62,6 @@ start_container() {
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 \
         -e CUDA_LAUNCH_BLOCKING=0 \
         -e BNB_CUDA_VERSION="" \
-        -e CUDA_PATH=/usr/lib/cuda \
-        -e LD_LIBRARY_PATH="/usr/lib/cuda/lib64:/usr/lib/cuda/lib:/usr/lib/x86_64-linux-gnu/nvidia/current" \
-        -e LIBRARY_PATH="/usr/lib/cuda/lib64:/usr/lib/cuda/lib:/usr/lib/x86_64-linux-gnu/nvidia/current" \
-        -e CUDA_HOME=/usr/lib/cuda \
         local-whisper:latest
     
     if [ $? -ne 0 ]; then

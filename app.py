@@ -28,7 +28,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 # os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'  # Commented out due to compatibility issue
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model_name_or_path = "/opt/praktik/whisper/TinyLlama-1.1B-Chat-v1.0"
+model_name_or_path = "/app/TinyLlama-1.1B-Chat-v1.0"
 
 # Global variables for models (lazy loading)
 whisper_model = None
@@ -81,17 +81,37 @@ def load_llama_model():
             print("Loading TinyLlama model...")
             tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path)
             
-            # Try GPU first
-            try:
-                llama_model = LlamaForCausalLM.from_pretrained(
-                    model_name_or_path,
-                    torch_dtype=torch.float16,
-                    device_map="auto"
-                )
-                print("TinyLlama loaded on GPU")
-            except Exception as e:
-                print(f"Failed to load on GPU: {e}")
-                print("Falling back to CPU...")
+            # Check if CUDA is available and working
+            if torch.cuda.is_available() and DEVICE == "cuda":
+                try:
+                    print("Attempting to load TinyLlama on GPU with float16...")
+                    llama_model = LlamaForCausalLM.from_pretrained(
+                        model_name_or_path,
+                        torch_dtype=torch.float16,
+                        device_map="auto"
+                    )
+                    print("TinyLlama loaded on GPU with float16")
+                except Exception as e:
+                    print(f"Failed to load on GPU with float16: {e}")
+                    print("Trying GPU with float32...")
+                    try:
+                        llama_model = LlamaForCausalLM.from_pretrained(
+                            model_name_or_path,
+                            torch_dtype=torch.float32,
+                            device_map="auto"
+                        )
+                        print("TinyLlama loaded on GPU with float32")
+                    except Exception as e2:
+                        print(f"Failed to load on GPU with float32: {e2}")
+                        print("Falling back to CPU...")
+                        llama_model = LlamaForCausalLM.from_pretrained(
+                            model_name_or_path,
+                            torch_dtype=torch.float32,
+                            device_map="cpu"
+                        )
+                        print("TinyLlama loaded on CPU")
+            else:
+                print("CUDA not available, loading on CPU...")
                 llama_model = LlamaForCausalLM.from_pretrained(
                     model_name_or_path,
                     torch_dtype=torch.float32,
@@ -198,6 +218,7 @@ def ensure_model_installed(from_code, to_code):
 
 # Call your ensure function for Danish to English
 ensure_model_installed("da", "en")
+ensure_model_installed("en", "da")
 
 installed_languages = argostranslate.translate.get_installed_languages()
 
@@ -278,7 +299,7 @@ def summarize_transcript(full_text: str) -> str:
                 continue
                 
             prompt = (
-                "Summarize the following transcript in 5–10 sentences:\n\n"
+                "Provide a clear and concise professional summary of the following meeting transcript. Focus on the main discussion points, key decisions, and any action items. The summary should be brief but complete — long enough to capture essential details without unnecessary repetition or filler.\n\n"
                 f"{chunk.strip()}\n\nSummary:"
             )
             summary_piece = run_llama_summary(prompt)
@@ -541,9 +562,18 @@ def summarize_from_json():
         to_lang = next((l for l in installed_languages if l.code == "da"), None)
 
         if from_lang and to_lang:
-            translation = from_lang.get_translation(to_lang)
-            danish_summary = translation.translate(summary)
+            try:
+                translation = from_lang.get_translation(to_lang)
+                if translation:
+                    danish_summary = translation.translate(summary)
+                else:
+                    print("Translation not available, returning English summary")
+                    danish_summary = summary
+            except Exception as e:
+                print(f"Translation error: {e}, returning English summary")
+                danish_summary = summary
         else:
+            print("Language pair not available, returning English summary")
             danish_summary = summary
 
         return Response(
@@ -677,6 +707,25 @@ def memory_status():
         return jsonify(status)
     except Exception as e:
         return jsonify({"error": f"Memory status error: {str(e)}"}), 500
+
+@app.route("/test_summary", methods=["POST"])
+def test_summary():
+    """Test summary functionality without translation"""
+    try:
+        json_data = request.get_json()
+        if not json_data or 'transcript' not in json_data:
+            return jsonify({"error": "No transcript data provided"}), 400
+
+        full_transcript = json_data['transcript']
+        summary = summarize_transcript(full_transcript)
+        
+        return jsonify({
+            "summary": summary,
+            "original_length": len(full_transcript),
+            "summary_length": len(summary)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/test_models", methods=["GET"])
 def test_models():

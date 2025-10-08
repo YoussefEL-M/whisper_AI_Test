@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Whisper App Startup Script
-# This script starts the Whisper app using Podman instead of Nix shell
+# Simple Whisper App Startup Script for Podman
+# This script starts the Whisper app using Podman with the existing venv
 
-echo "🎙️ Starting Whisper App with Podman..."
-echo "=================================="
+echo "🎙️ Starting Whisper App with Podman (Simple Mode)..."
+echo "=================================================="
 
 # Check if we're in the right directory
 if [ ! -f "app.py" ]; then
@@ -31,26 +31,19 @@ stop_existing_container() {
     fi
 }
 
-# Function to build and start container
-start_container() {
-    echo "🔨 Building Whisper container with full functionality..."
-    podman build -f Dockerfile.full -t local-whisper:latest .
+# Function to start container with existing venv
+start_container_with_venv() {
+    echo "🚀 Starting Whisper container with existing virtual environment..."
     
-    if [ $? -ne 0 ]; then
-        echo "❌ Error: Failed to build container"
+    # Check if venv exists
+    if [ ! -d "venv" ]; then
+        echo "❌ Error: Virtual environment not found. Please run with nix-shell first to create venv."
         exit 1
     fi
     
-    echo "🚀 Starting Whisper transcription service with CUDA support..."
     podman run -d \
         --name local-whisper \
         --restart unless-stopped \
-        --device /dev/nvidia0:/dev/nvidia0 \
-        --device /dev/nvidiactl:/dev/nvidiactl \
-        --device /dev/nvidia-uvm:/dev/nvidia-uvm \
-        -v /usr/lib/cuda:/usr/lib/cuda:ro \
-        -v /usr/include/cuda:/usr/include/cuda:ro \
-        -v /usr/lib/x86_64-linux-gnu/nvidia/current:/usr/lib/x86_64-linux-gnu/nvidia/current:ro \
         -p 5000:5000 \
         -p 5001:5001 \
         -v ./models:/app/models \
@@ -58,6 +51,9 @@ start_container() {
         -v ./TinyLlama-1.1B-Chat-v1.0:/app/TinyLlama-1.1B-Chat-v1.0 \
         -v ./static:/app/static \
         -v ./templates:/app/templates \
+        -v ./venv:/app/venv \
+        -v ./app.py:/app/app.py \
+        -v ./sockpy.py:/app/sockpy.py \
         -e CUDA_VISIBLE_DEVICES=0 \
         -e PYTHONPATH=/app \
         -e CUDA_DEVICE_ORDER=PCI_BUS_ID \
@@ -65,11 +61,8 @@ start_container() {
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 \
         -e CUDA_LAUNCH_BLOCKING=0 \
         -e BNB_CUDA_VERSION="" \
-        -e CUDA_PATH=/usr/lib/cuda \
-        -e LD_LIBRARY_PATH="/usr/lib/cuda/lib64:/usr/lib/cuda/lib:/usr/lib/x86_64-linux-gnu/nvidia/current" \
-        -e LIBRARY_PATH="/usr/lib/cuda/lib64:/usr/lib/cuda/lib:/usr/lib/x86_64-linux-gnu/nvidia/current" \
-        -e CUDA_HOME=/usr/lib/cuda \
-        local-whisper:latest
+        python:3.11-slim \
+        bash -c "apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* && cd /app && source venv/bin/activate && python app.py"
     
     if [ $? -ne 0 ]; then
         echo "❌ Error: Failed to start container"
@@ -107,7 +100,7 @@ show_status() {
 
 # Main execution
 stop_existing_container
-start_container
+start_container_with_venv
 show_status
 
 # Follow logs if requested
